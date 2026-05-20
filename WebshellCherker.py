@@ -47,14 +47,49 @@ class WebshellDetector:
         self.title_re = re.compile(r'<title>(.*?)</title>', re.I | re.S)
         
         self.seen_urls = set()
-        self.files = {level: open(f"{level.lower()}.txt", 'w', encoding='utf-8') 
-                     for level in ["CRITICAL", "HIGH", "SUSPICIOUS"]}
+        
+        # 分级输出文件
+        self.files = {
+            "CRITICAL": open("critical.txt", 'w', encoding='utf-8'),
+            "HIGH": open("high.txt", 'w', encoding='utf-8'),
+            "SUSPICIOUS": open("suspicious.txt", 'w', encoding='utf-8'),
+        }
 
         self.stats = Counter()
         self.last_adjust_time = time.time()
         self.current_global_limit = args.global_limit
 
-    # ... (get_random_headers, safe_url, head_precheck 保持不变)
+    def setup_logging(self):
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s | %(levelname)s | %(message)s',
+            handlers=[logging.FileHandler('webshell_detector.log', encoding='utf-8')]
+        )
+        self.logger = logging.getLogger(__name__)
+
+    async def init_session(self):
+        connector = aiohttp.TCPConnector(limit=600, ttl_dns_cache=300, keepalive_timeout=35, ssl=False)
+        timeout = aiohttp.ClientTimeout(total=22, connect=12, sock_read=18)
+        self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+
+    def get_random_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": random.choice(["en-US,en;q=0.9", "zh-CN,zh;q=0.9,en;q=0.8"]),
+            "Connection": "keep-alive",
+        }
+
+    def safe_url(self, base: str, filename: str) -> str:
+        return f"{base.rstrip('/')}/{filename.lstrip('/')}"
+
+    async def head_precheck(self, url: str):
+        try:
+            async with self.session.head(url, headers=self.get_random_headers(), 
+                                       allow_redirects=True, timeout=10) as resp:
+                return resp.status in {200, 301, 302, 403}
+        except:
+            return False
 
     async def check_url(self, base_url: str, filename: str):
         full_url = self.safe_url(base_url, filename)
@@ -116,29 +151,22 @@ class WebshellDetector:
         score = 0
         matched = []
 
-        # === Fingerprint 弱化（关键修复）===
-        fp_count = 0
-        for fp in CRITICAL_FINGERPRINTS:
-            if fp in text_lower or fp in title_lower:
-                fp_count += 1
-                matched.append(f"FINGERPRINT:{fp}")
-
+        # Fingerprint（弱化）
+        fp_count = sum(1 for fp in CRITICAL_FINGERPRINTS if fp in text_lower or fp in title_lower)
         if fp_count >= 1:
-            score += 25 * fp_count                    # 从 65 降到 25
+            score += 25 * fp_count
+            matched.append(f"FINGERPRINT×{fp_count}")
 
-        # 危险函数
         php_context = bool(re.search(r'<\?php|<\?', content[:800]))
         critical_count = sum(1 for pattern in self.compiled_regex if pattern.search(content))
         score += critical_count * 28
         if critical_count >= 1:
             matched.append(f"REGEX×{critical_count}")
 
-        # 多特征联合加成（降低单特征误报）
         if critical_count >= 2 and php_context:
             score += 35
             matched.append("MULTI_EXEC_PHP")
 
-        # UI 特征（强信号）
         if "<textarea" in text_lower and any(k in text_lower for k in ["cmd", "exec", "shell", "system"]):
             score += 25
             matched.append("TEXTAREA_CMD")
@@ -146,7 +174,7 @@ class WebshellDetector:
             score += 22
             matched.append("UPLOAD_UI")
 
-        # 减误报规则
+        # 减误报
         if any(word in text_lower for word in ["tutorial", "example", "demo", "blog", "article", "documentation"]):
             score -= 25
 
@@ -170,15 +198,35 @@ class WebshellDetector:
         color = "\033[1;32m" if risk == "CRITICAL" else "\033[1;33m" if risk == "HIGH" else "\033[1;36m"
         print(f"{color}🚨 [{risk}] {score} → {url}\033[0m")
 
+    def is_waf_or_blocked(self, status: int, content: str) -> bool:
+        if status not in {200, 301, 302}:
+            return True
+        text = content.lower()[:1500]
+        signs = ["cloudflare", "cf-ray", "captcha", "sucuri", "attention required"]
+        return any(sign in text for sign in signs)
+
     def is_likely_error_page(self, host: str, content: str) -> bool:
         if len(content) < 350:
             return True
         short_hash = hashlib.md5(content[:2600].encode()).hexdigest()
         self.error_page_hashes[host].append(short_hash)
-        # 提高阈值，减少误杀
         return self.error_page_hashes[host].count(short_hash) >= 8
 
-    # producer 使用 streaming 随机化（低内存）
+    def _adaptive_adjust(self):
+        now = time.time()
+        if now - self.last_adjust_time < 8:
+            return
+        total = sum(self.stats.values())
+        if total < 200:
+            return
+
+        if self.stats[429] / total > 0.07 or self.stats[403] / total > 0.12:
+            self.current_global_limit = max(40, self.current_global_limit - 35)
+            self.global_semaphore = asyncio.Semaphore(self.current_global_limit)
+            self.logger.warning(f"Adaptive DOWN → {self.current_global_limit}")
+        self.last_adjust_time = now
+        self.stats.clear()
+
     async def producer(self, queue: asyncio.Queue, directories: List[str], filenames: List[str]):
         dirs = directories[:]
         random.shuffle(dirs)
@@ -186,22 +234,55 @@ class WebshellDetector:
             fs = filenames[:]
             random.shuffle(fs)
             for f in fs:
-                if queue.qsize() > self.args.concurrency * 150:   # 动态控制
-                    await asyncio.sleep(0.01)
                 await queue.put((d, f))
 
-    # ... run(), worker(), _adaptive_adjust() 等保持合理实现
+    async def worker(self, queue: asyncio.Queue):
+        while True:
+            item = None
+            try:
+                item = await queue.get()
+                await self.check_url(*item)
+            except asyncio.CancelledError:
+                break
+            finally:
+                if item is not None:
+                    queue.task_done()
 
-    def __del__(self):
-        for f in self.files.values():
-            f.close()
+    async def run(self):
+        await self.init_session()
+        try:
+            directories = self.load_file(self.args.directories)
+            filenames = self.load_file(self.args.dictionary)
 
-# ====================== 主函数 ======================
+            total = len(directories) * len(filenames)
+            self.logger.info(f"Scan started → {total:,} targets | Min Score: {self.args.min_score}")
+
+            queue: asyncio.Queue = asyncio.Queue(maxsize=15000)
+            workers = [asyncio.create_task(self.worker(queue)) for _ in range(self.args.concurrency)]
+            producer = asyncio.create_task(self.producer(queue, directories, filenames))
+
+            await producer
+            await queue.join()
+
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+        finally:
+            # 安全关闭文件
+            for f in self.files.values():
+                f.close()
+            if self.session:
+                await self.session.close()
+
+    def load_file(self, filepath: str) -> List[str]:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Webshell Detector v7.0 - Balanced & Precise")
+    parser = argparse.ArgumentParser(description="Webshell Detector v7.1 - Fixed & Stable")
     parser.add_argument('--directories', '-d', required=True)
     parser.add_argument('--dictionary', '-w', required=True)
-    parser.add_argument('--output', '-o', default='found_webshells.txt')  # 保留兼容
     parser.add_argument('--min-score', type=int, default=62)
     parser.add_argument('--concurrency', '-c', type=int, default=100)
     parser.add_argument('--global-limit', type=int, default=180)
