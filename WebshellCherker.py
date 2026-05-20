@@ -25,7 +25,13 @@ ALLOWED_CONTENT_TYPES = {'text/html', 'text/plain', 'application/xhtml+xml'}
 MAX_RESPONSE_SIZE = 2_000_000
 MAX_HASHES_PER_HOST = 150
 
-USER_AGENTS = [ ... ]  # 保持之前的 UA 列表
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+]
+
 
 class WebshellDetector:
     def __init__(self, args):
