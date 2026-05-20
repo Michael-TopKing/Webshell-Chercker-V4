@@ -260,7 +260,7 @@ behavioral / ML detection
 
 ```bash
 git clone https://github.com/Michael-TopKing/Webshell-Checker-V4.git
-cd Webshell-Checker-V3
+cd Webshell-Checker-V4
 pip3 install -r requirements.txt
 ```
 
