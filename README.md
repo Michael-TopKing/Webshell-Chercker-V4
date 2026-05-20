@@ -10,8 +10,6 @@
 * 判断是否存在 PHP webshell / 后门
 * 输出风险等级（CRITICAL / HIGH / SUSPICIOUS）
 
----
-
 # 🔄 二、工作流程（从输入到输出）
 
 整体流程是：
@@ -261,9 +259,10 @@ behavioral / ML detection
 ## 1️⃣ 安装依赖
 
 ```bash
-pip install aiohttp
+git clone https://github.com/Michael-TopKing/Webshell-Checker-V4.git
+cd Webshell-Checker-V3
+pip3 install -r requirements.txt
 ```
-
 
 ## 2️⃣ 准备文件
 
@@ -272,18 +271,16 @@ directories.txt
 dictionary.txt
 ```
 
-
 ## 3️⃣ 运行
 
 ```bash
-python3 detector.py \
+python3 WebshellCherker.py \
   -d directories.txt \
   -w dictionary.txt \
-  -o 
+  -o found_webshells.txt \
+  -c 150
   --min-score 62 \
-  -c 100
 ```
-
 
 ## 4️⃣ 查看结果
 
@@ -292,18 +289,3 @@ CRITICAL.txt
 HIGH.txt
 SUSPICIOUS.txt
 ```
-
-
-# 📦 九、requirements.txt
-
-```
-aiohttp>=3.9.0
-beautifulsoup4
-```
-
-（如果你用 tqdm 才需要加 tqdm）
-
-
-如果你要，我可以帮你做下一步：
-
-👉 **“工业级 Webshell Scanner v8 架构设计（可扩展插件系统）”**
